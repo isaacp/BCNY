@@ -5,26 +5,39 @@ import (
 	"math/rand"
 )
 
+const (
+	normal mode = iota
+	shuffle
+)
+
 type (
+	mode        = int
 	AudioOutput struct{}
 
 	Player interface {
 		Next(output AudioOutput)
 		Play(playlist string, output AudioOutput)
 		AddToUserQueue(track Track)
+		SetMode(mode mode)
 	}
 
-	SequencedPlayer struct {
+	PlayerMode interface {
+		next(output AudioOutput, currentTrack int, plylist Playlist) int
+	}
+
+	NormalMode struct{}
+
+	RandomMode struct {
+		played map[string]bool
+	}
+
+	ConcretePlayer struct {
 		Lists           map[string]Playlist
 		CurrentPlaylist string
 		CurrentTrack    int
 		Output          AudioOutput
 		UserQueue       []Track
-	}
-
-	RandomPlayer struct {
-		SequencedPlayer
-		played map[string]bool
+		Mode            PlayerMode
 	}
 
 	Playlist struct {
@@ -37,131 +50,101 @@ type (
 	}
 )
 
-func (a *AudioOutput) startAudioOutput(trackName string) {
-	fmt.Printf("Playing track: %s\n", trackName)
-}
-
-func addToUserQueue(queue *[]Track, track Track) {
-	if *queue == nil {
-		*queue = make([]Track, 0)
-	}
-	*queue = append(*queue, track)
-}
-
-func (p *SequencedPlayer) AddToUserQueue(track Track) {
-	addToUserQueue(&p.UserQueue, track)
-}
-
-func (p *RandomPlayer) AddToUserQueue(track Track) {
-	addToUserQueue(&p.UserQueue, track)
-}
-
-func (p *RandomPlayer) Play(playlist string, output AudioOutput) {
-	list := p.Lists[playlist]
-	if len(list.tracks) > 0 {
-		p.CurrentPlaylist = playlist
-		p.CurrentTrack = 0
-		p.Output.startAudioOutput(p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title)
-	}
-}
-
-func (p *SequencedPlayer) Play(playlist string, output AudioOutput) {
-	list := p.Lists[playlist]
-	if len(list.tracks) > 0 {
-		p.CurrentPlaylist = playlist
-		p.CurrentTrack = 0
-		p.Output.startAudioOutput(p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title)
-	}
-}
-
-func (p *SequencedPlayer) Next(output AudioOutput) {
-	if len(p.UserQueue) > 0 {
-		track := p.UserQueue[0]
-		p.UserQueue = p.UserQueue[1:]
-		p.Output.startAudioOutput(track.title)
-		return
-	}
-
-	if p.CurrentTrack == len(p.Lists[p.CurrentPlaylist].tracks)-1 {
-		p.CurrentTrack = 0
-	} else {
-		p.CurrentTrack++
-	}
-	p.Output.startAudioOutput(p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title)
-}
-
-func (p *RandomPlayer) Next(output AudioOutput) {
-	if len(p.UserQueue) > 0 {
-		track := p.UserQueue[0]
-		p.UserQueue = p.UserQueue[1:]
-		p.Output.startAudioOutput(track.title)
-		return
-	}
-
-	p.CurrentTrack = randomize(len(p.Lists[p.CurrentPlaylist].tracks))
-	count := 0
-	for p.played[p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title] {
-		count++
-
-		if count >= len(p.Lists[p.CurrentPlaylist].tracks) {
-			fmt.Println("-- All tracks have been played randomly.")
-			return
-		}
-
-		p.CurrentTrack = randomize(len(p.Lists[p.CurrentPlaylist].tracks))
-
-	}
-	p.played[p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title] = true
-	p.Output.startAudioOutput(p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title)
-}
-
-func (p *SequencedPlayer) Shuffle() Player {
-	return &RandomPlayer{
-		SequencedPlayer: SequencedPlayer{
-			Lists:           p.Lists,
-			CurrentPlaylist: p.CurrentPlaylist,
-			CurrentTrack:    p.CurrentTrack,
-			Output:          p.Output,
-			UserQueue:       p.UserQueue,
-		},
-		played: make(map[string]bool),
-	}
-}
-
-func (p *RandomPlayer) Sequence() Player {
-	return &SequencedPlayer{
-		Lists:           p.Lists,
-		CurrentPlaylist: p.CurrentPlaylist,
-		CurrentTrack:    p.CurrentTrack,
-		Output:          p.Output,
-		UserQueue:       p.UserQueue,
-	}
-}
-
 func NewPlayer(lists []Playlist, random bool) Player {
 	playlists := make(map[string]Playlist)
 	for _, list := range lists {
 		playlists[list.name] = list
 	}
 
+	player := &ConcretePlayer{
+		Lists:           playlists,
+		CurrentPlaylist: "",
+		CurrentTrack:    0,
+		Output:          AudioOutput{},
+		UserQueue:       make([]Track, 0),
+		Mode:            &NormalMode{},
+	}
+
 	if random {
-		return &RandomPlayer{
-			SequencedPlayer: SequencedPlayer{
-				Lists:           playlists,
-				CurrentPlaylist: "",
-				CurrentTrack:    0,
-				Output:          AudioOutput{},
-				UserQueue:       make([]Track, 0),
-			},
-			played: make(map[string]bool),
-		}
+		player.SetMode(shuffle)
+	}
+
+	return player
+}
+
+func (a *AudioOutput) startAudioOutput(trackName string) {
+	fmt.Printf("Playing track: %s\n", trackName)
+}
+
+func (m *NormalMode) next(output AudioOutput, currentTrack int, playlist Playlist) int {
+	if currentTrack == len(playlist.tracks)-1 {
+		currentTrack = 0
 	} else {
-		return &SequencedPlayer{
-			Lists:           playlists,
-			CurrentPlaylist: "",
-			CurrentTrack:    0,
-			Output:          AudioOutput{},
-			UserQueue:       make([]Track, 0),
+		currentTrack++
+	}
+	output.startAudioOutput(playlist.tracks[currentTrack].title)
+	return currentTrack
+}
+
+func (m *RandomMode) next(output AudioOutput, currentTrack int, playlist Playlist) int {
+	hold := currentTrack
+	currentTrack = randomize(len(playlist.tracks))
+	for m.played[playlist.tracks[currentTrack].title] {
+
+		if len(m.played) >= len(playlist.tracks) {
+			fmt.Println("-- All tracks have been played randomly.")
+			return hold
+		}
+
+		currentTrack = randomize(len(playlist.tracks))
+
+	}
+	m.played[playlist.tracks[currentTrack].title] = true
+	output.startAudioOutput(playlist.tracks[currentTrack].title)
+	return currentTrack
+}
+
+func (p *ConcretePlayer) Next(output AudioOutput) {
+	if len(p.UserQueue) <= 0 {
+		p.CurrentTrack = p.Mode.next(output, p.CurrentTrack, p.Lists[p.CurrentPlaylist])
+		return
+	}
+
+	track := p.UserQueue[0]
+	p.UserQueue = p.UserQueue[1:]
+	p.Output.startAudioOutput(track.title)
+}
+
+func (p *ConcretePlayer) Play(playlist string, output AudioOutput) {
+	if len(p.Lists) == 0 {
+		return
+	}
+
+	list, ok := p.Lists[playlist]
+	if !ok {
+		return
+	}
+	if len(list.tracks) > 0 {
+		p.CurrentPlaylist = playlist
+		p.CurrentTrack = 0
+		p.Output.startAudioOutput(p.Lists[p.CurrentPlaylist].tracks[p.CurrentTrack].title)
+	}
+}
+
+func (p *ConcretePlayer) AddToUserQueue(track Track) {
+	if p.UserQueue == nil {
+		p.UserQueue = make([]Track, 0)
+	}
+	p.UserQueue = append(p.UserQueue, track)
+}
+
+func (p *ConcretePlayer) SetMode(mode mode) {
+	switch mode {
+	case normal:
+		p.Mode = &NormalMode{}
+	case shuffle:
+		p.Mode = &RandomMode{
+			played: make(map[string]bool),
 		}
 	}
 }
